@@ -1,6 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const contract = require("../blockchain"); // ✅ Blockchain contract
+const runPythonCheck = require("../utils/runPythonCheck");
 
 // 🧑‍🌾 Add Product (Farmer) - Stores all details on blockchain
 router.post("/farmer/add-product", async (req, res) => {
@@ -60,18 +61,66 @@ router.post("/farmer/add-product", async (req, res) => {
 
 
 
-// 🧑‍💼 Update Price (Vendor)
-// 🧑‍💼 Update Price (Vendor)
+// 🧑‍💼 Update Price (Vendor) - now guarded by ML fraud detection
 router.post("/vendor/update-price", async (req, res) => {
     const { productId, newPrice } = req.body;
 
+    const numericProductId = Number(productId);
+    const numericPrice = Number(newPrice);
+
+    if (!Number.isInteger(numericProductId) || numericProductId <= 0) {
+        return res.status(400).json({ error: "Valid productId is required" });
+    }
+    if (!Number.isFinite(numericPrice) || numericPrice <= 0) {
+        return res.status(400).json({ error: "newPrice must be a positive number" });
+    }
+
+    let product;
     try {
-        const tx = await contract.updatePrice(productId, newPrice);
+        product = await contract.getProduct(numericProductId);
+    } catch (error) {
+        console.error("❌ Unable to fetch product for ML validation:", error);
+        return res.status(400).json({ error: "Invalid productId or blockchain unavailable" });
+    }
+
+    const [commodity,, state, district, market] = product;
+
+    let mlResult;
+    try {
+        mlResult = await runPythonCheck({
+            commodity,
+            state,
+            district,
+            market,
+            vendor_price: numericPrice
+        });
+    } catch (error) {
+        console.error("❌ Python ML check failed:", error);
+        return res.status(502).json({ error: error.message || "Failed to run ML price verification" });
+    }
+
+    if (mlResult.status === "error") {
+        return res.status(502).json({ error: mlResult.message || "Price verification failed", mlResult });
+    }
+
+    if (mlResult.status !== "accept") {
+        return res.status(400).json({
+            error: mlResult.reason || "Vendor price rejected by ML",
+            mlResult
+        });
+    }
+
+    try {
+        const tx = await contract.updatePrice(numericProductId, numericPrice);
         const receipt = await tx.wait();
 
         res.status(200).json({
             message: "✅ Price updated on blockchain.",
-            txHash: receipt.hash
+            txHash: receipt.hash,
+            mlResult,
+            mlVerificationStatus: mlResult.status,
+            mlReason: mlResult.reason || "",
+            marketModalPrice: mlResult.market_modal_price ?? mlResult.marketModalPrice ?? null
         });
     } catch (error) {
         console.error("❌ Error updating price:", error);

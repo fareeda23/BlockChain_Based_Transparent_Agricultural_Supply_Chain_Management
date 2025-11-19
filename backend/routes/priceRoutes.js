@@ -1,56 +1,9 @@
 const express = require('express');
-const { spawn } = require('child_process');
-const path = require('path');
 const Product = require('../models/Product');
 const contract = require('../blockchain');
+const runPythonCheck = require('../utils/runPythonCheck');
 
 const router = express.Router();
-
-function runPythonCheck(payload) {
-	return new Promise((resolve, reject) => {
-		const scriptPath = path.join(__dirname, '..', 'ml', 'price_model.py');
-		const candidates = ['python', 'python3', 'py'];
-		let attempted = 0;
-		let lastErr = null;
-		function tryNext() {
-			if (attempted >= candidates.length) {
-				return reject(lastErr || new Error('Python not found'));
-			}
-			const cmd = candidates[attempted++];
-			const py = spawn(cmd, [scriptPath, 'check', JSON.stringify(payload)], {
-				stdio: ['ignore', 'pipe', 'pipe']
-			});
-			let out = '';
-			let err = '';
-			let started = false;
-			py.stdout.on('data', (d) => {
-				started = true;
-				out += d.toString();
-			});
-			py.stderr.on('data', (d) => (err += d.toString()));
-			py.on('error', (e) => {
-				lastErr = e;
-				tryNext();
-			});
-			py.on('close', (code) => {
-				if (!started && code !== 0) {
-					lastErr = new Error(err || `Python exited with ${code}`);
-					return tryNext();
-				}
-				if (code !== 0) {
-					return reject(new Error(err || `Python exited with ${code}`));
-				}
-				try {
-					const parsed = JSON.parse(out.trim());
-					resolve(parsed);
-				} catch (e) {
-					reject(new Error('Invalid JSON from Python'));
-				}
-			});
-		}
-		tryNext();
-	});
-}
 
 // POST /api/check-price
 router.post('/check-price', async (req, res) => {

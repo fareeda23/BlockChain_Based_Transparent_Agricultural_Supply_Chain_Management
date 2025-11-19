@@ -17,6 +17,7 @@ function Vendor() {
   const [vendorPrice, setVendorPrice] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
+  const [mlResult, setMlResult] = useState(null);
 
   const isFormReady = useMemo(() =>
     commodity && stateName && district && market && vendorPrice, [commodity, stateName, district, market, vendorPrice]);
@@ -99,6 +100,7 @@ function Vendor() {
     e.preventDefault();
     setSuccessMsg('');
     setErrorMsg('');
+    setMlResult(null);
     if (!isFormReady) return;
     try {
       // Resolve selected combo to DB product with blockchainProductId
@@ -114,6 +116,28 @@ function Vendor() {
       const productId = match.blockchainProductId;
       if (!productId) throw new Error('Missing blockchain product ID for selection');
 
+      // Run ML verification before attempting blockchain update
+      const verifyRes = await fetch(`${API_BASE}/check-price`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          commodity,
+          state: stateName,
+          district,
+          market,
+          vendor_price: Number(vendorPrice)
+        })
+      });
+      const verifyData = await verifyRes.json();
+      setMlResult(verifyData);
+      if (!verifyRes.ok) {
+        throw new Error(verifyData?.message || 'Price verification failed');
+      }
+      if (verifyData.status !== 'accept') {
+        setErrorMsg(verifyData.reason || 'Price rejected by ML/business rules');
+        return;
+      }
+
       // Submit vendor price update to blockchain
       const upRes = await fetch(`${API_BASE}/products/vendor/update-price`, {
         method: 'POST',
@@ -123,6 +147,7 @@ function Vendor() {
       const upData = await upRes.json();
       if (!upRes.ok) throw new Error(upData?.error || 'Failed to update price');
 
+      setMlResult(upData.mlResult || verifyData || null);
       setSuccessMsg(`✅ ${upData.message}`);
       setVendorPrice('');
     } catch (e) {
@@ -168,6 +193,16 @@ function Vendor() {
         />
 
         <button type="submit" disabled={!isFormReady}>Submit Price</button>
+
+        {mlResult && (
+          <p className={mlResult.status === 'accept' ? 'success-message' : 'error'}>
+            ML Status: {mlResult.status?.toUpperCase()}
+            {mlResult.reason ? ` - ${mlResult.reason}` : ''}
+            {typeof (mlResult.market_modal_price ?? mlResult.marketModalPrice) === 'number'
+              ? ` (Market modal ₹${mlResult.market_modal_price ?? mlResult.marketModalPrice})`
+              : ''}
+          </p>
+        )}
 
         {successMsg && <p className="success-message">{successMsg}</p>}
         {errorMsg && <p className="error">{errorMsg}</p>}
